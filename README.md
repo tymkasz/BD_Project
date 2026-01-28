@@ -137,24 +137,148 @@ System posiada 5 kluczowych triggerów sterujących przepływem danych:
 
 ## 5. Scenariusze Testowe (Test Cases)
 
-### Scenariusz A: Wykrywanie SQL Injection
-*   **Akcja:** Wysłanie pakietu z payloadem `{"query": "UNION SELECT..."}`.
-*   **Oczekiwany rezultat:** Wpis w `malware_logs`, automatyczne utworzenie incydentu `CRITICAL`.
+### 1. Weryfikacja Threat Intelligence (Blokowanie na wejściu)
+**Cel:** Sprawdź, czy ruch z adresów IP znajdujących się w `threat_intelligence_feed` został zablokowany bez głębokiej analizy.
+**Oczekiwany wynik:** Rekordy w tabeli `fake_traffic_logs` z akcją `BLOCKED_THREAT_INTEL`.
+
 ```sql
-SELECT * FROM malware_logs 
-WHERE quarantined_payload::text LIKE '%UNION SELECT%';
+SELECT 
+    f.source_ip, 
+    f.action_taken, 
+    f.detection_time,
+    t.threat_category,
+    t.risk_score
+FROM fake_traffic_logs f
+JOIN threat_intelligence_feed t ON f.source_ip = t.ip_address
+WHERE f.action_taken = 'BLOCKED_THREAT_INTEL';
 ```
 
-### Scenariusz B: Blokada Threat Intel
-*   **Akcja:** Wysłanie pakietu z adresu IP znajdującego się w czarnej liście.
-*   **Oczekiwany rezultat:** Natychmiastowe przeniesienie do `fake_traffic_logs` (powód: `BLOCKED_THREAT_INTEL`).
+### 2. Detekcja SQL Injection (Malware Trigger)
+**Cel:** Potwierdź, że payload zawierający `"UNION SELECT"` trafił do logów malware.
+**Oczekiwany wynik:** Rekordy w `malware_logs` wskazujące na regułę SQL Injection.
 
-### Scenariusz C: Raport Analityka (Dashboard)
-*   **Akcja:** Wyświetlenie bieżącej kolejki zadań przez widok `v_analyst_queue`.
 ```sql
-SELECT incident_id, severity, assigned_user 
-FROM v_analyst_queue 
-WHERE status = 'OPEN';
+SELECT 
+    m.log_id,
+    m.source_ip,
+    d.rule_name,
+    m.quarantined_payload
+FROM malware_logs m
+JOIN detection_rules d ON m.detected_rule_id = d.rule_id
+WHERE d.rule_name LIKE '%SQLi%';
+```
+
+### 3. Automatyczne tworzenie Incydentów (Trigger Logic)
+**Cel:** Sprawdź, czy dla krytycznego malware system sam utworzył ticket w `security_incidents`.
+**Oczekiwany wynik:** Incydenty o statusie `CRITICAL` powiązane z logami malware.
+
+```sql
+SELECT 
+    i.incident_id,
+    i.title,
+    i.severity,
+    i.created_at,
+    m.source_ip AS attacker_ip
+FROM security_incidents i
+JOIN malware_logs m ON i.primary_malware_log_id = m.log_id
+WHERE i.severity = 'CRITICAL';```
+
+### 4. Audyt zmian w incydentach
+**Cel:** Sprawdź, czy historia zmian statusu incydentu zapisała się w logu audytowym.
+**Oczekiwany wynik:** Lista zmian (np. z `OPEN` na `RESOLVED`) wraz z nazwą użytkownika.
+
+```sql
+SELECT 
+    a.audit_id,
+    i.title AS incident_title,
+    u.username AS changed_by,
+    a.old_status,
+    a.new_status,
+    a.change_timestamp
+FROM incident_audit_log a
+JOIN security_incidents i ON a.incident_id = i.incident_id
+JOIN system_users u ON a.changed_by_user_id = u.user_id
+ORDER BY a.change_timestamp DESC;
+```
+
+### 5. Logowanie czystego ruchu
+**Cel:** Upewnij się, że zwykły ruch (np. HTTP GET) trafia do `clean_network_logs`.
+**Oczekiwany wynik:** Rekordy, które nie są malwarem ani fałszywym ruchem.
+
+```sql
+SELECT 
+    c.clean_id,
+    c.source_ip,
+    c.dest_ip,
+    rt.raw_packet_payload ->> 'url' as accessed_url
+FROM clean_network_logs c
+JOIN raw_input_traffic rt ON c.original_packet_id = rt.packet_id
+LIMIT 10;
+```
+
+### 6. Mechanizm Auto-Ban (Wykrywanie skanowania)
+**Cel:** Sprawdź, czy system automatycznie dodał agresywne IP do bazy Threat Intel.
+**Oczekiwany wynik:** Nowy wpis w `threat_intelligence_feed` z dostawcą `Internal IDS`.
+
+```sql
+SELECT * FROM threat_intelligence_feed 
+WHERE provider_name = 'Internal IDS' 
+  AND threat_category = 'AUTO_BAN_SCANNER';
+```
+
+### 7. Widok kolejki analityka (Dashboard)
+**Cel:** Sprawdź, czy widok `v_analyst_queue` łączy dane poprawnie (Incydent + Użytkownik + Atakujący).
+**Oczekiwany wynik:** Czytelna tabela dla analityka (bez ID, same nazwy).
+
+```sql
+SELECT * FROM v_analyst_queue 
+WHERE status != 'RESOLVED'
+ORDER BY severity DESC;
+```
+
+### 8. Wydajność Indeksu JSON (Explain Analyze)
+**Cel:** Sprawdź, czy baza danych używa indeksu GIN do przeszukiwania JSON-a.
+**Oczekiwany wynik:** W planie zapytania powinno pojawić się `Bitmap Heap Scan` lub `Bitmap Index Scan`.
+
+```sql
+EXPLAIN ANALYZE
+SELECT packet_id, source_ip 
+FROM raw_input_traffic 
+WHERE raw_packet_payload @> '{"method": "GET"}';
+```
+
+### 9. Aktualizacja statusu urządzenia (Network Visibility)
+**Cel:** Sprawdź, czy aktywność sieciowa aktualizuje pole `last_seen` w tabeli urządzeń.
+**Oczekiwany wynik:** Urządzenia, które generowały ruch w ciągu ostatnich minut.
+
+```sql
+SELECT 
+    hostname, 
+    ip_address, 
+    last_seen,
+    NOW() - last_seen as time_since_last_packet
+FROM connected_devices
+WHERE last_seen > NOW() - INTERVAL '1 hour'
+ORDER BY last_seen DESC;
+```
+
+### 10. Raport Podatności (CVE Mapping)
+**Cel:** Połącz wykryty atak z bazą wiedzy o podatnościach.
+**Oczekiwany wynik:** Lista ataków wraz z opisem podatności (CVE), na którą były wycelowane.
+
+```sql
+SELECT 
+    m.source_ip,
+    m.detection_time,
+    d.rule_name,
+    v.cve_id,
+    v.description AS vulnerability_description,
+    v.base_score AS cvss_score
+FROM malware_logs m
+JOIN detection_rules d ON m.detected_rule_id = d.rule_id
+JOIN vulnerability_database v ON d.related_cve_id = v.cve_id
+ORDER BY v.base_score DESC;
+```
 ```
 
 ---
