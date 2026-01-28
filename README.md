@@ -1,4 +1,3 @@
-Jasne, oto dokument z poprawioną numeracją, bez zmiany pozostałej treści.
 
 ---
 
