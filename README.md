@@ -181,7 +181,8 @@ SELECT
     m.source_ip AS attacker_ip
 FROM security_incidents i
 JOIN malware_logs m ON i.primary_malware_log_id = m.log_id
-WHERE i.severity = 'CRITICAL';```
+WHERE i.severity = 'CRITICAL';
+```
 
 ### 4. Audyt zmian w incydentach
 **Cel:** Sprawdź, czy historia zmian statusu incydentu zapisała się w logu audytowym.
@@ -278,7 +279,6 @@ FROM malware_logs m
 JOIN detection_rules d ON m.detected_rule_id = d.rule_id
 JOIN vulnerability_database v ON d.related_cve_id = v.cve_id
 ORDER BY v.base_score DESC;
-```
 ```
 
 ---
