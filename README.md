@@ -1,6 +1,3 @@
-
----
-
 # Dokumentacja Techniczna Systemu Bazy Danych IDS/IPS (SIEM)
 **Technologia:** PostgreSQL 14+
 **Autorzy:** Jakub Szymczak, Tymoteusz Kruk, Kamil Pawelczak
